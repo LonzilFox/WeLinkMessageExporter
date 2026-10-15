@@ -1,0 +1,158 @@
+<Window x:Class="WeLinkMessageExporter.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:controls="clr-namespace:WeLinkMessageExporter.Controls"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="WeLink Message Exporter" Width="1160" Height="785" MinWidth="840" MinHeight="590"
+        WindowStartupLocation="CenterScreen" Background="{StaticResource BackgroundBrush}" Foreground="{StaticResource TextBrush}"
+        FontFamily="Microsoft YaHei UI" FontSize="13" UseLayoutRounding="True">
+    <Grid Margin="20,15,20,12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        <Grid Grid.Row="0" Margin="2,2,2,18">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+            <StackPanel>
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                    <Border Background="#21443C" CornerRadius="11" Padding="12,7" Margin="0,0,12,0"><TextBlock Text="W" Foreground="{StaticResource AccentBrush}" FontSize="18" FontWeight="Bold"/></Border>
+                    <TextBlock Text="WeLink Message Exporter" FontSize="22" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                    <Border Background="#233047" CornerRadius="8" Margin="10,0,0,0" Padding="8,3" VerticalAlignment="Center"><TextBlock Text="v0.0.2" Foreground="{StaticResource MutedBrush}" FontSize="11"/></Border>
+                </StackPanel>
+                <TextBlock Text="选择群聊或私聊，按日期导出完整消息文本 · 北京时间 UTC+08:00" Foreground="{StaticResource MutedBrush}" Margin="0,11,0,0" FontSize="12"/>
+            </StackPanel>
+            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                <TextBlock x:Name="LoginStatusText" Text="未检测" Foreground="{StaticResource MutedBrush}" Margin="0,0,14,0" VerticalAlignment="Center"/>
+                <Button x:Name="LoginButton" Content="扫码登录" Margin="0,0,8,0" Click="Login_Click"/>
+                <Button x:Name="CheckButton" Content="检查连接" Margin="0,0,8,0" Click="Check_Click"/>
+                <Button x:Name="RefreshButton" Content="刷新会话" Background="{StaticResource BlueBrush}" Click="Refresh_Click"/>
+            </StackPanel>
+        </Grid>
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="388"/><ColumnDefinition Width="14"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+            <Border Grid.Column="0" Background="{StaticResource PanelBrush}" CornerRadius="16" Padding="16">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/><RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+                    <StackPanel Grid.Row="0">
+                        <DockPanel>
+                            <TextBlock Text="会话列表" FontWeight="SemiBold" FontSize="16"/>
+                            <TextBlock x:Name="CountText" Text="0 个会话" DockPanel.Dock="Right" HorizontalAlignment="Right" Foreground="{StaticResource MutedBrush}" FontSize="12"/>
+                        </DockPanel>
+                        <UniformGrid Columns="3" Margin="0,14,0,11">
+                            <Button x:Name="AllFilter" Content="全部" Margin="0,0,5,0" Background="#314B57" Click="AllFilter_Click"/>
+                            <Button x:Name="PrivateFilter" Content="私聊" Margin="3,0,3,0" Click="PrivateFilter_Click"/>
+                            <Button x:Name="GroupFilter" Content="群聊" Margin="5,0,0,0" Click="GroupFilter_Click"/>
+                        </UniformGrid>
+                        <Grid Margin="0,0,0,10">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                            <TextBox x:Name="SearchBox" ToolTip="在已加载会话内筛选；点击右侧按钮在线搜索更多会话" TextChanged="SearchBox_TextChanged"/>
+                            <Button Grid.Column="1" x:Name="RemoteSearchButton" Content="在线搜索" Margin="8,0,0,0" Click="RemoteSearch_Click"/>
+                        </Grid>
+                    </StackPanel>
+                    <ListBox Grid.Row="2" x:Name="ConversationList" SelectionChanged="ConversationList_SelectionChanged" Background="Transparent" BorderThickness="0" Foreground="{StaticResource TextBrush}"
+                             ScrollViewer.VerticalScrollBarVisibility="Auto" ScrollViewer.CanContentScroll="True" VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <Border Background="{StaticResource PanelRaisedBrush}" CornerRadius="10" Padding="10,10" Margin="0,0,2,0">
+                                    <DockPanel LastChildFill="True">
+                                        <CheckBox IsChecked="{Binding Selected, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,9,0" VerticalAlignment="Center"/>
+                                        <StackPanel>
+                                            <TextBlock Text="{Binding Name, Mode=OneWay}" FontWeight="Medium" FontSize="13" TextTrimming="CharacterEllipsis" ToolTip="{Binding Name, Mode=OneWay}"/>
+                                            <TextBlock Foreground="{StaticResource MutedBrush}" FontSize="11" TextTrimming="CharacterEllipsis" Margin="0,4,0,0">
+                                                <Run Text="{Binding KindText, Mode=OneWay}"/><Run Text=" · "/><Run Text="{Binding Detail, Mode=OneWay}"/>
+                                            </TextBlock>
+                                        </StackPanel>
+                                    </DockPanel>
+                                </Border>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+                    <StackPanel Grid.Row="3" Margin="0,12,0,0">
+                        <DockPanel Margin="0,0,0,9">
+                            <TextBlock x:Name="SelectedText" Text="已选择 0 个" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" HorizontalAlignment="Right">
+                                <Button Content="选择可见" Padding="9,5" Click="SelectVisible_Click"/>
+                                <Button Content="清空选择" Padding="9,5" Margin="7,0,0,0" Click="ClearSelection_Click"/>
+                            </StackPanel>
+                        </DockPanel>
+                        <Border Background="#172033" CornerRadius="11" Padding="10">
+                            <StackPanel>
+                                <TextBlock Text="手动添加未出现在列表的会话" FontWeight="SemiBold" FontSize="12"/>
+                                <StackPanel Orientation="Horizontal" Margin="0,9,0,7">
+                                    <RadioButton x:Name="ManualGroupRadio" Content="群聊 ID" IsChecked="True" GroupName="ManualType" Margin="0,0,16,0"/>
+                                    <RadioButton x:Name="ManualPrivateRadio" Content="私聊账号" GroupName="ManualType"/>
+                                </StackPanel>
+                                <TextBlock Text="名称（可选）" FontSize="11" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,4"/>
+                                <TextBox x:Name="ManualNameBox" Margin="0,0,0,7" ToolTip="可输入备注名称（如：项目群），未输入则显示 ID"/>
+                                <TextBlock Text="群 ID / 私聊 W3 账号" FontSize="11" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,4"/>
+                                <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                    <TextBox x:Name="ManualIdBox" ToolTip="群聊填写 group_id；私聊填写 target_account（w3 账号）"/>
+                                    <Button Grid.Column="1" Content="添加" Margin="7,0,0,0" Click="ManualAdd_Click"/>
+                                </Grid>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+                </Grid>
+            </Border>
+            <Border Grid.Column="2" Background="{StaticResource PanelBrush}" CornerRadius="16" Padding="19">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                    <StackPanel>
+                        <TextBlock Text="导出设置" FontSize="17" FontWeight="SemiBold" Margin="0,0,0,7"/>
+                        <TextBlock Text="仅导出勾选的会话，不修改或发送任何 WeLink 消息。" Foreground="{StaticResource MutedBrush}" FontSize="12" TextWrapping="Wrap"/>
+                        <TextBlock Text="日期范围" Foreground="{StaticResource MutedBrush}" Margin="0,22,0,8"/>
+                        <Grid>
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="16"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0"><TextBlock Text="开始日期（含当天）" FontSize="11" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,6"/>
+                                <controls:DarkDatePicker x:Name="StartPicker"/></StackPanel>
+                            <StackPanel Grid.Column="2"><TextBlock Text="结束日期（含当天）" FontSize="11" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,6"/>
+                                <controls:DarkDatePicker x:Name="EndPicker"/></StackPanel>
+                        </Grid>
+                        <TextBlock Text="保存位置" Foreground="{StaticResource MutedBrush}" Margin="0,19,0,7"/>
+                        <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                            <TextBox x:Name="OutputBox"/>
+                            <Button Content="浏览…" Margin="8,0,0,0" Grid.Column="1" Click="Browse_Click"/>
+                        </Grid>
+                        <Grid Margin="0,18,0,0">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                            <TextBlock Text="每页拉取消息数" VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}"/>
+                            <StackPanel Grid.Column="1" Orientation="Horizontal">
+                                <RadioButton x:Name="Page20" Content="20" GroupName="PageSize" VerticalAlignment="Center" Margin="0,0,13,0"/>
+                                <RadioButton x:Name="Page50" Content="50" GroupName="PageSize" VerticalAlignment="Center" Margin="0,0,13,0"/>
+                                <RadioButton x:Name="Page100" Content="100" GroupName="PageSize" VerticalAlignment="Center" IsChecked="True"/>
+                            </StackPanel>
+                        </Grid>
+                        <Border Background="#172C30" CornerRadius="10" Padding="11,10" Margin="0,18,0,17">
+                            <TextBlock Foreground="#B5DED2" TextWrapping="Wrap" FontSize="11" LineHeight="19"
+                                       Text="范围内消息将持续向前分页，直到越过开始日期；包括你本人发送的消息。非文字消息保留原始描述。接口能返回的消息才可导出；未解析的成员会保留原始账号。"/>
+                        </Border>
+                        <Grid>
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                            <Button x:Name="ExportButton" Grid.Column="0" Content="导出所选会话为 TXT" Style="{StaticResource PrimaryButton}" Click="Export_Click"/>
+                            <Button x:Name="CancelButton" Grid.Column="1" Content="取消" IsEnabled="False" Margin="9,0,0,0" Click="Cancel_Click"/>
+                        </Grid>
+                        <ProgressBar x:Name="ExportProgress" Height="5" Margin="0,17,0,7" Background="#243243" Foreground="{StaticResource AccentBrush}" Minimum="0" Maximum="100" Value="0"/>
+                        <TextBlock x:Name="ProgressText" Text="等待导出" Foreground="{StaticResource MutedBrush}" FontSize="12" TextWrapping="Wrap"/>
+                        <DockPanel Margin="0,18,0,8">
+                            <TextBlock Text="运行日志" FontSize="15" FontWeight="SemiBold"/>
+                            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                                <Button Content="诊断日志" Padding="9,5" Margin="0,0,7,0" Click="OpenDiagnostics_Click"/>
+                                <Button Content="打开导出目录" Padding="9,5" Click="OpenOutput_Click"/>
+                            </StackPanel>
+                        </DockPanel>
+                        <TextBox x:Name="LogBox" Height="180" IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap"
+                                 VerticalContentAlignment="Top" VerticalScrollBarVisibility="Auto" FontSize="11" FontFamily="Consolas" Background="#0C1422"/>
+                        <TextBlock Margin="0,11,0,0" FontSize="11" Foreground="{StaticResource MutedBrush}" TextWrapping="Wrap"
+                                   Text="扫描范围：最近会话（CLI 能返回的数量）+ 在线关键词搜索 + 手动添加 + 本地历史索引。官方 CLI 未提供全部历史会话的无条件枚举接口。"/>
+                    </StackPanel>
+                </ScrollViewer>
+            </Border>
+        </Grid>
+        <DockPanel Grid.Row="2" LastChildFill="True" Margin="3,12,3,0">
+            <TextBlock Text="WeLink CLI · 本地只读导出 · TXT / UTF-8" Foreground="{StaticResource MutedBrush}" DockPanel.Dock="Right" FontSize="11"/>
+            <TextBlock x:Name="FooterText" Text="就绪" Foreground="{StaticResource MutedBrush}" FontSize="11"/>
+        </DockPanel>
+    </Grid>
+</Window>
