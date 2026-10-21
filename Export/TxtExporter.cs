@@ -30,6 +30,8 @@ public static class TxtExporter
                 await writer.WriteLineAsync($"类型：{conversation.KindText}");
                 await writer.WriteLineAsync($"日期：{from:yyyy-MM-dd} 至 {to:yyyy-MM-dd}（北京时间 UTC+08:00）");
                 await writer.WriteLineAsync($"消息数：{messages.Count}");
+                if (messages.Count == 0)
+                    await writer.WriteLineAsync("说明：本次 WeLink CLI 查询未返回所选日期范围内的可读取消息；请核对会话及日期。");
                 await writer.WriteLineAsync(new string('─', 52));
                 await writer.WriteLineAsync();
                 foreach (var msg in messages)

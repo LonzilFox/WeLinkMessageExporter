@@ -1,3 +1,4 @@
+using System.Collections;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Diagnostics;
@@ -28,10 +29,14 @@ public partial class MainWindow : Window
     private readonly ObservableCollection<Conversation> _conversations = new();
     private readonly ICollectionView _view;
     private string _filter = "all";
+    private string _sortMode = "latest";
+    private long _currentRecentBatch;
+    private CancellationTokenSource? _activityCts;
     private CancellationTokenSource? _cts;
     private bool _busy;
     private bool _isClosing;
     private bool _startupScheduled;
+    private int _wheelDeltaRemainder;
 
     public MainWindow()
     {
@@ -43,6 +48,7 @@ public partial class MainWindow : Window
         _contacts = new ContactService(_cli);
         _view = CollectionViewSource.GetDefaultView(_conversations);
         _view.Filter = FilterConversation;
+        if (_view is ListCollectionView sortedView) sortedView.CustomSort = new ConversationComparer(this);
         ConversationList.ItemsSource = _view;
         DateTime beijingToday = DateTime.UtcNow.AddHours(8).Date;
         StartPicker.SelectedDate = beijingToday.AddDays(-30);
@@ -50,13 +56,22 @@ public partial class MainWindow : Window
         OutputBox.Text = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "WeLinkExports");
         try
         {
-            foreach (var item in ConversationStore.Load().Where(x => x is not null)) AddOrUpdate(item, save: false);
+            foreach (var item in ConversationStore.Load().Where(x => x is not null))
+            {
+                // Pin badges are only for the current live snapshot, never cached flags.
+                item.PinStatusKnown = false;
+                item.IsWeLinkPinned = false;
+                AddOrUpdate(item, save: false);
+            }
         }
         catch (Exception ex)
         {
             CrashReporter.Exception("Loading local conversation index", ex);
             // Cache errors must not block access to the main window.
         }
+        _currentRecentBatch = _conversations.Count == 0 ? 0 : _conversations.Max(x => x.RecentBatchTicks);
+        ApplySortMode("latest");
+        SetNativePinAvailability(false);
         UpdateCounts();
         CrashReporter.Trace("MainWindow initialized; waiting for visual tree");
         SourceInitialized += (_, _) =>
@@ -75,6 +90,7 @@ public partial class MainWindow : Window
         {
             _isClosing = true;
             try { _cts?.Cancel(); } catch (ObjectDisposedException) { }
+            try { _activityCts?.Cancel(); } catch (ObjectDisposedException) { }
             try { ConversationStore.Save(_conversations); } catch (Exception ex) { CrashReporter.Exception("Closing: saving index", ex); }
             try { _diagnostics.Dispose(); } catch (Exception ex) { CrashReporter.Exception("Closing: diagnostic shutdown", ex); }
             CrashReporter.Trace("MainWindow closed");
@@ -235,15 +251,16 @@ public partial class MainWindow : Window
         finally { FinishOperation(); }
     }
 
-    private async Task LoadRecentAsync()
+    private async Task LoadRecentAsync(bool userInitiated = false)
     {
         if (!EnterOperation(true)) return;
         try
         {
-            Log("正在查询最近会话；本地已发现的历史会话不会清空。");
+            // Stop any previous probe. A new refresh must reflect its own latest snapshot.
+            _activityCts?.Cancel();
+            Log("正在刷新会话列表；WeLink 原生置顶状态仅在 CLI 返回明确字段时识别。");
             List<Conversation>? rows = null;
             Exception? last = null;
-            // Different CLI versions may impose different count limits.
             foreach (int count in new[] { 100, 50, 20, 10 })
             {
                 _cts!.Token.ThrowIfCancellationRequested();
@@ -251,14 +268,190 @@ public partial class MainWindow : Window
                 catch (Exception ex) when (ex is not OperationCanceledException) { last = ex; }
             }
             if (rows is null) throw last ?? new InvalidOperationException("未取得最近会话列表。");
-            foreach (var row in rows) AddOrUpdate(row, save: false);
+
+            var existingKeys = new HashSet<string>(_conversations.Select(x => x.Key));
+            // A refresh is a new authoritative snapshot. Clear prior pin metadata first;
+            // only rows that explicitly carry a native pin field will be marked again.
+            foreach (var existing in _conversations)
+            {
+                existing.PinStatusKnown = false;
+                existing.IsWeLinkPinned = false;
+            }
+            long batch = DateTime.UtcNow.Ticks;
+            _currentRecentBatch = batch;
+            int rank = 0;
+            foreach (var row in rows)
+            {
+                row.RecentBatchTicks = batch;
+                row.RecentRank = rank++;
+                AddOrUpdate(row, save: false);
+            }
+            int added = _conversations.Count(x => !existingKeys.Contains(x.Key));
             ConversationStore.Save(_conversations);
-            _view.Refresh(); UpdateCounts();
-            Log($"最近会话返回 {rows.Count} 条；本地索引共 {_conversations.Count} 条。可用在线搜索补充旧聊天。");
+            if (userInitiated)
+            {
+                // A stale search/type filter or scroll offset must not hide newly discovered chats.
+                if (!string.IsNullOrWhiteSpace(SearchBox.Text)) SearchBox.Clear();
+                SetFilter("all");
+            }
+            _view.Refresh();
+            UpdateCounts();
+            ScrollConversationListToTop();
+            int pinKnown = rows.Count(x => x.PinStatusKnown);
+            int pinnedCount = rows.Count(x => x.PinStatusKnown && x.IsWeLinkPinned);
+            SetNativePinAvailability(pinKnown > 0, pinKnown, pinnedCount, _conversations.Count);
+            Log($"刷新完成：本次取得 {rows.Count} 条（新增 {added} 条），原生置顶状态明确 {pinKnown} 条、其中置顶 {pinnedCount} 条；本地索引共 {_conversations.Count} 条。");
+            if (pinKnown == 0)
+            {
+                string fields = string.IsNullOrWhiteSpace(_conversationService.LastRecentFieldNames) ? "（无字段）" : _conversationService.LastRecentFieldNames;
+                Log("当前 CLI 返回数据没有可识别的原生置顶字段，不能判断哪些会话已在 WeLink 中置顶。实际字段名：" + fields);
+                ProgressText.Text = "WeLink CLI 未提供置顶状态；置顶优先暂不可用。需要其他接口或客户端本地数据源。";
+            }
+            else
+            {
+                Log("识别到的置顶字段：" + _conversationService.LastRecentPinFieldNames);
+                ProgressText.Text = $"已识别 {pinnedCount} 个 WeLink 原生置顶会话。";
+            }
+            // The sample WeLink API does not supply per-conversation timestamps.
+            // Resolve them separately without delaying the visible refresh.
+            // Limit timestamp probes to the visible recent chats, rather than firing 100
+            // concurrent CLI calls and hitting the server's rate/error limits.
+            BeginActivityLookup(rows.Take(12).Select(r => r.Key).Distinct().ToList(), batch);
         }
         catch (OperationCanceledException) { Log("取消刷新会话。"); }
         catch (Exception ex) { CrashReporter.Exception("Recent conversation refresh", ex); Log("刷新失败：" + ex.Message); }
         finally { FinishOperation(); }
+    }
+
+    private void ConversationList_PreviewMouseWheel(object sender, System.Windows.Input.MouseWheelEventArgs e)
+    {
+        // Keep the virtualized panel in item-scroll mode. One physical wheel notch
+        // advances exactly one conversation, instead of WPF's usual three-item jump.
+        var viewer = FindVisualChild<ScrollViewer>(ConversationList);
+        if (viewer is null) return;
+        _wheelDeltaRemainder += e.Delta;
+        while (_wheelDeltaRemainder >= 120)
+        {
+            viewer.LineUp();
+            _wheelDeltaRemainder -= 120;
+        }
+        while (_wheelDeltaRemainder <= -120)
+        {
+            viewer.LineDown();
+            _wheelDeltaRemainder += 120;
+        }
+        e.Handled = true;
+    }
+
+    private void SetNativePinAvailability(bool available, int known = 0, int pinned = 0, int total = 0)
+    {
+        if (PinnedSortButton is null) return;
+        PinnedSortButton.IsEnabled = available;
+        PinnedSortButton.Content = available ? "置顶优先" : "置顶信息不可用";
+        PinnedSortButton.ToolTip = available
+            ? "根据 WeLink CLI 返回的原生置顶标记排序"
+            : "当前 WeLink CLI 的会话响应未提供原生置顶字段；不能可靠识别客户端置顶状态。";
+        PinStatusHint.Text = available
+            ? $"置顶 {pinned} · 已确认 {known} · 未确认 {Math.Max(0, total - known)}"
+            : "未取得置顶状态";
+        PinStatusHint.ToolTip = available
+            ? "仅显示 CLI 明确返回的置顶标记；未确认会话不代表未置顶。"
+            : "当前未取得可识别的 WeLink 原生置顶字段；不会伪造置顶标记。";
+        if (!available && _sortMode == "pinned") ApplySortMode("latest");
+    }
+
+    private static T? FindVisualChild<T>(DependencyObject parent) where T : DependencyObject
+    {
+        int count = VisualTreeHelper.GetChildrenCount(parent);
+        for (int i = 0; i < count; i++)
+        {
+            var child = VisualTreeHelper.GetChild(parent, i);
+            if (child is T match) return match;
+            var nested = FindVisualChild<T>(child);
+            if (nested is not null) return nested;
+        }
+        return null;
+    }
+
+    private void ScrollConversationListToTop()
+    {
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            if (_isClosing) return;
+            _wheelDeltaRemainder = 0;
+            var viewer = FindVisualChild<ScrollViewer>(ConversationList);
+            if (viewer is not null) viewer.ScrollToTop();
+            else if (_view.Cast<Conversation>().FirstOrDefault() is { } first) ConversationList.ScrollIntoView(first);
+        }), DispatcherPriority.Loaded);
+    }
+
+    private void BeginActivityLookup(IReadOnlyList<string> keys, long batch)
+    {
+        _activityCts?.Cancel();
+        if (_isClosing || keys.Count == 0) return;
+        var cts = new CancellationTokenSource();
+        _activityCts = cts;
+        _ = SafeActivityLookupAsync(keys, batch, cts);
+    }
+
+    private async Task SafeActivityLookupAsync(IReadOnlyList<string> keys, long batch, CancellationTokenSource cts)
+    {
+        int succeeded = 0, failed = 0;
+        using var slots = new SemaphoreSlim(3, 3);
+        try
+        {
+            // Capture immutable identities; avoid touching ObservableCollection off the UI thread.
+            var targets = keys.Select(key => _conversations.FirstOrDefault(x => x.Key == key))
+                .Where(x => x is not null).Cast<Conversation>()
+                .Select(x => new Conversation { Type = x.Type, Id = x.Id, Name = x.Name }).ToList();
+            var tasks = targets.Select(async conv =>
+            {
+                await slots.WaitAsync(cts.Token);
+                try
+                {
+                    // Probe timeouts must not hold up the refresh or block later exports.
+                    using var perChatTimeout = CancellationTokenSource.CreateLinkedTokenSource(cts.Token);
+                    perChatTimeout.CancelAfter(TimeSpan.FromSeconds(12));
+                    long latest = await _messageService.GetLatestMessageTimeAsync(conv, perChatTimeout.Token);
+                    if (latest > 0)
+                    {
+                        await Dispatcher.InvokeAsync(() =>
+                        {
+                            if (_isClosing || cts.IsCancellationRequested || _currentRecentBatch != batch) return;
+                            var known = _conversations.FirstOrDefault(x => x.Key == conv.Key);
+                            if (known == null) return;
+                            // Timestamp is display-only for the active recent batch.
+                            // Resorting after each response used to reshuffle rows while scrolling.
+                            known.LastMessageUnixMs = Math.Max(known.LastMessageUnixMs, latest);
+                        }, DispatcherPriority.Background);
+                        Interlocked.Increment(ref succeeded);
+                    }
+                    else Interlocked.Increment(ref failed);
+                }
+                catch (OperationCanceledException) when (cts.IsCancellationRequested) { }
+                catch (OperationCanceledException) { Interlocked.Increment(ref failed); } // per-chat timeout
+                catch (Exception) { Interlocked.Increment(ref failed); }
+                finally { slots.Release(); }
+            }).ToList();
+            await Task.WhenAll(tasks);
+            if (!cts.IsCancellationRequested && !_isClosing)
+            {
+                await Dispatcher.InvokeAsync(() =>
+                {
+                    if (_currentRecentBatch != batch) return;
+                    ConversationStore.Save(_conversations);
+                    Log($"最近会话前 {targets.Count} 项时间抽样核对结束：成功 {succeeded}，未确认 {failed}。排序不会被抽样结果打乱。");
+                    ProgressText.Text = "排序已稳定：置顶优先模式仅提升 WeLink 明确标记为置顶的会话。";
+                }, DispatcherPriority.Background);
+            }
+        }
+        catch (OperationCanceledException) when (cts.IsCancellationRequested) { }
+        catch (Exception ex) { CrashReporter.Exception("Activity timestamp refresh", ex); }
+        finally
+        {
+            if (ReferenceEquals(_activityCts, cts)) _activityCts = null;
+            cts.Dispose();
+        }
     }
 
     private void AddOrUpdate(Conversation conv, bool save = true)
@@ -277,6 +470,25 @@ public partial class MainWindow : Window
             // Prefer an existing custom label, but replace raw-ID placeholders with discovered names.
             if ((known.Name == known.Id || string.IsNullOrWhiteSpace(known.Name)) && !string.IsNullOrWhiteSpace(conv.Name)) known.Name = conv.Name;
             if (!string.IsNullOrWhiteSpace(conv.Detail)) known.Detail = conv.Detail;
+            if (conv.RecentBatchTicks > 0)
+            {
+                known.RecentBatchTicks = conv.RecentBatchTicks;
+                known.RecentRank = conv.RecentRank;
+            }
+            if (conv.LastMessageUnixMs > 0) known.LastMessageUnixMs = Math.Max(known.LastMessageUnixMs, conv.LastMessageUnixMs);
+            if (conv.PinStatusKnown)
+            {
+                known.PinStatusKnown = true;
+                known.IsWeLinkPinned = conv.IsWeLinkPinned;
+            }
+            else if (conv.RecentBatchTicks > 0)
+            {
+                // A fresh recent-conversation snapshot without a pin field cannot confirm
+                // the previous cached state. Clear it rather than showing a stale fake pin.
+                known.PinStatusKnown = false;
+                known.IsWeLinkPinned = false;
+            }
+            // Preserve selection. Native pin state is refreshed only from an explicit CLI flag.
         }
         if (save) { ConversationStore.Save(_conversations); _view.Refresh(); UpdateCounts(); }
     }
@@ -286,13 +498,16 @@ public partial class MainWindow : Window
     }
     private void UpdateCounts()
     {
-        CountText.Text = $"{_conversations.Count} 个会话";
+        int visible = _view.Cast<Conversation>().Count();
+        CountText.Text = visible == _conversations.Count ? $"{visible} 个会话" : $"显示 {visible} / {_conversations.Count}";
         SelectedText.Text = $"已选择 {_conversations.Count(c => c.Selected)} 个";
     }
 
     private void SearchBox_TextChanged(object sender, TextChangedEventArgs e)
     {
-        _view?.Refresh();
+        if (_view is null) return;
+        _view.Refresh();
+        UpdateCounts();
     }
     private void SetFilter(string filter)
     {
@@ -304,15 +519,97 @@ public partial class MainWindow : Window
         PrivateFilter.Foreground = (Brush)FindResource(filter == "private" ? "BackgroundBrush" : "TextBrush");
         GroupFilter.Foreground = (Brush)FindResource(filter == "group" ? "BackgroundBrush" : "TextBrush");
         _view.Refresh();
+        UpdateCounts();
     }
+    private void ApplySortMode(string mode)
+    {
+        // Native pin sorting is disabled unless the latest CLI snapshot explicitly
+        // exposes a pin field. Do not silently present a fake pinned-first mode.
+        if (mode == "pinned" && !PinnedSortButton.IsEnabled)
+        {
+            mode = "latest";
+            Log("无法切换置顶优先：当前 WeLink CLI 没有返回原生置顶状态。");
+        }
+        _sortMode = mode;
+        UpdateSortButtonVisual("LatestSortButton", mode == "latest");
+        UpdateSortButtonVisual("PinnedSortButton", mode == "pinned");
+        _view.Refresh();
+    }
+
+    private void UpdateSortButtonVisual(string name, bool active)
+    {
+        if (FindName(name) is not Button button)
+        {
+            // Keep sorting functional even if a customized layout omits this button.
+            CrashReporter.Trace($"Optional sorting control not found: {name}");
+            return;
+        }
+        button.Background = (Brush)FindResource(active ? "AccentBrush" : "PanelRaisedBrush");
+        button.Foreground = (Brush)FindResource(active ? "BackgroundBrush" : "TextBrush");
+    }
+    private void LatestSort_Click(object sender, RoutedEventArgs e) { ApplySortMode("latest"); ScrollConversationListToTop(); }
+    private void PinnedSort_Click(object sender, RoutedEventArgs e)
+    {
+        if (!PinnedSortButton.IsEnabled)
+        {
+            Log("置顶优先不可用：当前 WeLink CLI 响应不包含原生置顶字段。");
+            return;
+        }
+        ApplySortMode("pinned");
+        ScrollConversationListToTop();
+    }
+    private sealed class ConversationComparer : IComparer
+    {
+        private readonly MainWindow _owner;
+        public ConversationComparer(MainWindow owner) => _owner = owner;
+        public int Compare(object? a, object? b)
+        {
+            if (ReferenceEquals(a, b)) return 0;
+            if (a is not Conversation x) return -1;
+            if (b is not Conversation y) return 1;
+            if (_owner._sortMode == "pinned" && x.IsWeLinkPinned != y.IsWeLinkPinned)
+                return x.IsWeLinkPinned ? -1 : 1;
+            return CompareActivity(x, y, _owner._currentRecentBatch);
+        }
+        private static int CompareActivity(Conversation x, Conversation y, long batch)
+        {
+            // The CLI's recent-conversation response does not contain a timestamp.
+            // Its returned order is the most reliable common ranking for the entire
+            // CURRENT snapshot. Do not mix timestamps for only 14/99 rows with the
+            // other 85: doing so makes known/unknown rows leapfrog unexpectedly.
+            bool xRecent = batch > 0 && x.RecentBatchTicks == batch;
+            bool yRecent = batch > 0 && y.RecentBatchTicks == batch;
+            if (xRecent != yRecent) return xRecent ? -1 : 1;
+            if (xRecent && yRecent)
+            {
+                int byRank = x.RecentRank.CompareTo(y.RecentRank);
+                if (byRank != 0) return byRank;
+            }
+            else
+            {
+                // Historical/search-only chats are not ordered by the current
+                // recent response. Use their validated cached timestamps when available.
+                bool xHasTime = x.LastMessageUnixMs > 946684800000L;
+                bool yHasTime = y.LastMessageUnixMs > 946684800000L;
+                if (xHasTime != yHasTime) return xHasTime ? -1 : 1;
+                if (xHasTime)
+                {
+                    int byTime = y.LastMessageUnixMs.CompareTo(x.LastMessageUnixMs);
+                    if (byTime != 0) return byTime;
+                }
+                int bySnapshot = y.RecentBatchTicks.CompareTo(x.RecentBatchTicks);
+                if (bySnapshot != 0) return bySnapshot;
+                int byRank = x.RecentRank.CompareTo(y.RecentRank);
+                if (byRank != 0) return byRank;
+            }
+            int byName = StringComparer.CurrentCultureIgnoreCase.Compare(x.Name, y.Name);
+            return byName != 0 ? byName : StringComparer.Ordinal.Compare(x.Key, y.Key);
+        }
+    }
+
     private void AllFilter_Click(object sender, RoutedEventArgs e) => SetFilter("all");
     private void PrivateFilter_Click(object sender, RoutedEventArgs e) => SetFilter("private");
     private void GroupFilter_Click(object sender, RoutedEventArgs e) => SetFilter("group");
-    private void ConversationList_SelectionChanged(object sender, SelectionChangedEventArgs e)
-    {
-        foreach (var conversation in e.AddedItems.OfType<Conversation>()) conversation.Selected = !conversation.Selected;
-        if (ConversationList.SelectedItem != null) ConversationList.SelectedItem = null;
-    }
     private void SelectVisible_Click(object sender, RoutedEventArgs e)
     {
         foreach (var conv in _view.Cast<Conversation>()) conv.Selected = true;
@@ -323,6 +620,12 @@ public partial class MainWindow : Window
         foreach (var conv in _conversations) conv.Selected = false;
         ConversationStore.Save(_conversations);
     }
+    private void ShowManualAdd_Click(object sender, RoutedEventArgs e)
+    {
+        ManualAddPanel.BringIntoView();
+        ManualIdBox.Focus();
+    }
+
     private void ManualAdd_Click(object sender, RoutedEventArgs e)
     {
         try
@@ -350,12 +653,17 @@ public partial class MainWindow : Window
             ConversationStore.Save(_conversations);
             _view.Refresh(); UpdateCounts();
             Log($"在线搜索得到 {rows.Count} 条，已合并到本地会话列表。");
+            if (rows.Count is > 0 and <= 12)
+            {
+                Log("搜索结果较少，后台核对这些会话的最新消息时间，以便正确插入排序位置。");
+                BeginActivityLookup(rows.Select(x => x.Key).Distinct().ToList(), _currentRecentBatch);
+            }
         }
         catch (OperationCanceledException) { Log("已取消在线搜索。"); }
         catch (Exception ex) { Log("在线搜索失败：" + ex.Message); }
         finally { FinishOperation(); }
     }
-    private async void Refresh_Click(object sender, RoutedEventArgs e) => await LoadRecentAsync();
+    private async void Refresh_Click(object sender, RoutedEventArgs e) => await LoadRecentAsync(userInitiated: true);
     private async void Check_Click(object sender, RoutedEventArgs e) => await CheckConnectionAsync();
     private async void Login_Click(object sender, RoutedEventArgs e)
     {
@@ -452,6 +760,7 @@ public partial class MainWindow : Window
         string path = OutputBox.Text.Trim();
         if (path.Length == 0) { MessageBox.Show("请选择导出目录。", "路径错误", MessageBoxButton.OK, MessageBoxImage.Warning); return; }
         if (!EnterOperation(true)) return;
+        _activityCts?.Cancel(); // Prevent timestamp probes competing with large history exports.
         var succeeded = new List<string>();
         var failed = new List<string>();
         int pageSize = Page20.IsChecked == true ? 20 : Page50.IsChecked == true ? 50 : 100;
@@ -470,6 +779,8 @@ public partial class MainWindow : Window
                 {
                     var messages = await _messageService.GetRangeAsync(conv, from, to, pageSize, Log, _cts.Token);
                     _cts.Token.ThrowIfCancellationRequested();
+                    if (messages.Count == 0)
+                        Log($"{conv.Name}：接口在选定日期范围内未返回消息，TXT 会标注 0 条；如果 WeLink 客户端存在对应消息，请核对会话账号及所选日期。");
                     ProgressText.Text = $"正在补全发送人：{conv.Name}（{messages.Count} 条消息）";
                     var names = await _contacts.ResolveAsync(messages.Select(x => x.Sender), Log, _cts.Token);
                     int missing = names.Values.Count(v => !v.Resolved);
