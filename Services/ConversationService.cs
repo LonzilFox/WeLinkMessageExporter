@@ -1,5 +1,6 @@
 using WeLinkMessageExporter.Models;
 using System.Text.Json;
+using System.Globalization;
 namespace WeLinkMessageExporter.Services;
 public sealed class ConversationService
 {
@@ -22,7 +23,7 @@ public sealed class ConversationService
                 var id = JsonHelpers.Str(row, "group_id");
                 if (string.IsNullOrWhiteSpace(id) || id == "0") continue;
                 string name = JsonHelpers.Str(row, "group_name");
-                result.Add(new Conversation { Type = "group", Id = id, Name = string.IsNullOrWhiteSpace(name) ? id : name, Detail = "群 ID: " + id, GroupType = JsonHelpers.Str(row, "group_type") });
+                result.Add(new Conversation { Type = "group", Id = id, Name = string.IsNullOrWhiteSpace(name) ? id : name, Detail = "群 ID: " + id, GroupType = JsonHelpers.Str(row, "group_type"), LastMessageUnixMs = ReadRecentTime(row) });
             }
             else if (type == "CHAT_TYPE_P2P_MSG")
             {
@@ -30,10 +31,33 @@ public sealed class ConversationService
                 if (string.IsNullOrWhiteSpace(id)) continue;
                 string name = JsonHelpers.Str(row, "native_name", "staff_name");
                 string staff = JsonHelpers.Str(row, "staff_name");
-                result.Add(new Conversation { Type = "private", Id = id, Name = string.IsNullOrWhiteSpace(name) ? id : name, Detail = string.IsNullOrWhiteSpace(staff) ? id : staff + " · " + id });
+                result.Add(new Conversation { Type = "private", Id = id, Name = string.IsNullOrWhiteSpace(name) ? id : name, Detail = string.IsNullOrWhiteSpace(staff) ? id : staff + " · " + id, LastMessageUnixMs = ReadRecentTime(row) });
             }
         }
         return result;
+    }
+
+    // Some CLI/backend builds may expose a last-message field. The supplied CLI example does not,
+    // so this is only an opportunistic fast path and never substitutes an unknown time with "now".
+    private static long ReadRecentTime(JsonElement row)
+    {
+        var value = JsonHelpers.Get(row, "lastMsgTime", "lastMessageTime", "last_msg_time",
+            "last_message_time", "lastSendTime", "lastMessageSendTime", "serverSendTime",
+            "latestMessageTime", "latest_msg_time", "recentTime");
+        if (value.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null) return 0;
+        long numeric;
+        bool parsedNumber = value.ValueKind == JsonValueKind.Number
+            ? value.TryGetInt64(out numeric)
+            : long.TryParse(value.ValueKind == JsonValueKind.String ? value.GetString() : "", out numeric);
+        if (parsedNumber)
+        {
+            if (numeric is > 946684800 and < 4102444800L) numeric *= 1000;
+            return numeric is > 946684800000L and < 4102444800000L ? numeric : 0;
+        }
+        if (value.ValueKind == JsonValueKind.String &&
+            DateTimeOffset.TryParse(value.GetString(), CultureInfo.InvariantCulture,
+                DateTimeStyles.AssumeUniversal, out var parsed)) return parsed.ToUnixTimeMilliseconds();
+        return 0;
     }
 
     public async Task<List<Conversation>> SearchAsync(string keyword, CancellationToken ct)

@@ -2,9 +2,13 @@
 
 Windows desktop tool to export selected WeLink group or private conversations to UTF-8 TXT files.
 
-## Features (v0.0.2)
+## Features (v0.0.3)
 
 - Categorize conversations into **All / Private / Group** and search locally.
+- Two **independently selectable sort modes**: **Latest message first** and **Pinned first**, with each pin group ordered by message recency. Pinned state is local to this exporter, not WeLink's client-side pin setting.
+- A manual **Refresh conversations** merges newly returned group/private chats without putting them at the bottom, preserves selection and local pins, clears stale search/type filters, and returns the list to the top. The existing local conversation index is retained.
+- To avoid waiting for a large batch of history requests, the app displays the server's recent-chat ordering immediately and probes the newest message timestamp of each returned conversation asynchronously (up to three concurrent read-only queries). Unconfirmed timestamps are labeled; the UI remains usable, and refresh/export cancels stale probes.
+- The recent-chat API shown in the supplied CLI sample has no reliable per-chat timestamp or pinned bit; therefore previously unknown chats use a temporary recent-order fallback until timestamp lookup succeeds, and full historical conversation enumeration is not claimed.
 - Discover conversations through recent chats and WeLink CLI person/group search. Manually add a `group_id` or private `target_account` for older conversations.
 - Select one or multiple conversations, and set an **inclusive date range** (Beijing time, UTC+08:00).
 - Fetch historical messages with message-ID pagination, de-duplicate and sort chronologically, including your own messages.
@@ -14,6 +18,9 @@ Windows desktop tool to export selected WeLink group or private conversations to
 - Fully dark date controls with a custom dark calendar popup; matching input, focus, selection and scrollbars.
 - Interactive login starts the real `welink-cli auth login` command in a visible console, waits for mobile QR approval without an arbitrary timeout, verifies `auth status`, and refreshes conversations on successful login. Use **Cancel** to stop a pending login.
 - Export diagnostic logs to `%LOCALAPPDATA%\WeLinkMessageExporter\logs` without message bodies or tokens.
+- Handle different history response envelopes for new or older private chats. When the standard `chatInfo` field is absent, retry with an explicit older-message direction and smaller pages; only a confirmed empty page/count is treated as no history.
+- Include a short response-shape summary (JSON property names and result code only) if a chat still fails. This distinguishes API format or access problems without logging private message content.
+- TXT files with zero messages now explicitly state that no messages were returned for the selected date range.
 
 ## Requirements
 
@@ -24,6 +31,8 @@ Windows desktop tool to export selected WeLink group or private conversations to
 - Follow the WeLink and company data-handling rules for chat exports.
 
 ## Run and build
+
+The development launcher uses a non-incremental build to regenerate WPF XAML bindings after UI changes, avoiding stale generated control fields.
 
 - `run_dev.bat` — build and run.
 - `build_release.bat` — publish self-contained `win-x64` app to `publish/win-x64/`.
@@ -39,4 +48,27 @@ WeLink CLI documents **recent conversations**, keyword searches and history quer
 
 During history extraction, pagination continues towards older messages until the specified start date or history exhaustion. If the cursor or response format fails, the affected chat is marked failed instead of exporting a silently truncated TXT. Chat history visibility still depends on what the authenticated WeLink account/API can retrieve.
 
-Conversation and resolved-contact indexes are stored under `%LOCALAPPDATA%\WeLinkMessageExporter`; message bodies are written only to the selected export directory. No chat messages are sent to third-party services.
+Conversation sorting metadata, local pinned preferences, conversation and resolved-contact indexes are stored under `%LOCALAPPDATA%\WeLinkMessageExporter`; message bodies are written only to the selected export directory. No chat messages are sent to third-party services.
+
+## Troubleshooting a recent private chat
+
+If a recently contacted person fails to export, verify that the private conversation uses their **W3 account**, not their employee number. The supported history command is:
+
+```powershell
+welink-cli im query-history-message --user-account "YOUR_W3_ACCOUNT" --query-count 20
+```
+
+The application automatically tries compatible query variants when a successful API response lacks the standard message array. If all variants fail, open **Diagnostic logs** in the app and inspect the property-name-only response summary. Do not share actual chat text, bearer tokens, or QR-login credentials.
+
+A response with no `chatInfo` and no explicit zero-count indicator cannot be safely assumed to mean "no messages". Such chats remain failed so that the tool never silently creates an incomplete export.
+
+## v0.0.3 sorting/scroll hotfix
+
+- Recent chats keep the order returned by `query-recent-conversation` on refresh; timestamps from optional small probes are **display-only** to prevent rows jumping around as calls finish. Older locally stored chats (not in the recent response) use known timestamps when available. Without a timestamp from WeLink, a perfect chronological comparison against older indexed chats is not possible.
+- Pin priority is stored locally for the exact `type:id` and never changes WeLink's own pinned chats.
+- The ScrollBar templates now forward Minimum, Maximum, Value and ViewportSize to PART_Track; dragging the thumb, wheel scrolling and page navigation work with the WPF ScrollViewer.
+- Selection is controlled by the checkbox, not transient ListBox selection; this avoids recycling/sorting side effects.
+
+### Extraction on Windows
+
+The ZIP contains the single folder `WeLinkMessageExporter/` (without a version in its name). To avoid a second version-named wrapper created by **Windows Explorer's Extract All** button, extract the archive contents **directly into the parent directory** (e.g. 7-Zip → Extract Here), or use the separately provided `extract_welink_project.bat` placed alongside the ZIP. Explorer's default versioned extraction folder is chosen by Explorer based on the ZIP filename; an archive cannot override that destination.

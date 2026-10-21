@@ -17,7 +17,7 @@
                 <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                     <Border Background="#21443C" CornerRadius="11" Padding="12,7" Margin="0,0,12,0"><TextBlock Text="W" Foreground="{StaticResource AccentBrush}" FontSize="18" FontWeight="Bold"/></Border>
                     <TextBlock Text="WeLink Message Exporter" FontSize="22" FontWeight="SemiBold" VerticalAlignment="Center"/>
-                    <Border Background="#233047" CornerRadius="8" Margin="10,0,0,0" Padding="8,3" VerticalAlignment="Center"><TextBlock Text="v0.0.2" Foreground="{StaticResource MutedBrush}" FontSize="11"/></Border>
+                    <Border Background="#233047" CornerRadius="8" Margin="10,0,0,0" Padding="8,3" VerticalAlignment="Center"><TextBlock Text="v0.0.3" Foreground="{StaticResource MutedBrush}" FontSize="11"/></Border>
                 </StackPanel>
                 <TextBlock Text="选择群聊或私聊，按日期导出完整消息文本 · 北京时间 UTC+08:00" Foreground="{StaticResource MutedBrush}" Margin="0,11,0,0" FontSize="12"/>
             </StackPanel>
@@ -46,31 +46,45 @@
                             <Button x:Name="PrivateFilter" Content="私聊" Margin="3,0,3,0" Click="PrivateFilter_Click"/>
                             <Button x:Name="GroupFilter" Content="群聊" Margin="5,0,0,0" Click="GroupFilter_Click"/>
                         </UniformGrid>
+                        <UniformGrid Columns="2" Margin="0,0,0,10">
+                            <Button x:Name="LatestSortButton" Content="最新消息优先" Margin="0,0,5,0" Click="LatestSort_Click" ToolTip="最近会话以 WeLink 返回顺序优先，旧索引按已知消息时间排序"/>
+                            <Button x:Name="PinnedSortButton" Content="置顶优先" Margin="5,0,0,0" Click="PinnedSort_Click" ToolTip="先显示本工具的置顶会话，置顶与普通会话内部均按相同活动顺序排列"/>
+                        </UniformGrid>
                         <Grid Margin="0,0,0,10">
                             <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                             <TextBox x:Name="SearchBox" ToolTip="在已加载会话内筛选；点击右侧按钮在线搜索更多会话" TextChanged="SearchBox_TextChanged"/>
                             <Button Grid.Column="1" x:Name="RemoteSearchButton" Content="在线搜索" Margin="8,0,0,0" Click="RemoteSearch_Click"/>
                         </Grid>
                     </StackPanel>
-                    <ListBox Grid.Row="2" x:Name="ConversationList" SelectionChanged="ConversationList_SelectionChanged" Background="Transparent" BorderThickness="0" Foreground="{StaticResource TextBrush}"
-                             ScrollViewer.VerticalScrollBarVisibility="Auto" ScrollViewer.CanContentScroll="True" VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling">
+                    <ListBox Grid.Row="2" x:Name="ConversationList" Background="Transparent" BorderThickness="0" Foreground="{StaticResource TextBrush}"
+                             ScrollViewer.VerticalScrollBarVisibility="Auto" ScrollViewer.CanContentScroll="True" ScrollViewer.PanningMode="VerticalOnly" VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling">
                         <ListBox.ItemTemplate>
                             <DataTemplate>
                                 <Border Background="{StaticResource PanelRaisedBrush}" CornerRadius="10" Padding="10,10" Margin="0,0,2,0">
-                                    <DockPanel LastChildFill="True">
-                                        <CheckBox IsChecked="{Binding Selected, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,9,0" VerticalAlignment="Center"/>
-                                        <StackPanel>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <CheckBox Grid.Column="0" IsChecked="{Binding Selected, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,9,0" VerticalAlignment="Center"/>
+                                        <StackPanel Grid.Column="1" MinWidth="0">
                                             <TextBlock Text="{Binding Name, Mode=OneWay}" FontWeight="Medium" FontSize="13" TextTrimming="CharacterEllipsis" ToolTip="{Binding Name, Mode=OneWay}"/>
                                             <TextBlock Foreground="{StaticResource MutedBrush}" FontSize="11" TextTrimming="CharacterEllipsis" Margin="0,4,0,0">
                                                 <Run Text="{Binding KindText, Mode=OneWay}"/><Run Text=" · "/><Run Text="{Binding Detail, Mode=OneWay}"/>
                                             </TextBlock>
+                                            <TextBlock Text="{Binding LastActivityText, Mode=OneWay}" Foreground="#92B8C5" FontSize="11" Margin="0,4,0,0"/>
                                         </StackPanel>
-                                    </DockPanel>
+                                        <Button Grid.Column="2" Content="{Binding PinSymbol, Mode=OneWay}" ToolTip="{Binding PinToolTip, Mode=OneWay}"
+                                                Click="PinConversation_Click" MinWidth="34" Height="34" FontSize="19" Padding="4"
+                                                Foreground="{StaticResource AccentBrush}" Background="{StaticResource InputBrush}"
+                                                BorderBrush="{StaticResource InputBorderBrush}" Margin="8,0,0,0" VerticalAlignment="Center"/>
+                                    </Grid>
                                 </Border>
                             </DataTemplate>
                         </ListBox.ItemTemplate>
                     </ListBox>
                     <StackPanel Grid.Row="3" Margin="0,12,0,0">
+                        <TextBlock Text="★ 为工具内置顶，不会修改 WeLink 客户端的置顶状态" Foreground="{StaticResource MutedBrush}" FontSize="10" TextWrapping="Wrap" Margin="0,0,0,9"/>
+                        <TextBlock Text="近期列表按 WeLink 返回顺序；未提供时间的消息无法精确跨会话比较" Foreground="{StaticResource MutedBrush}" FontSize="10" TextWrapping="Wrap" Margin="0,0,0,9"/>
                         <DockPanel Margin="0,0,0,9">
                             <TextBlock x:Name="SelectedText" Text="已选择 0 个" FontWeight="SemiBold" VerticalAlignment="Center"/>
                             <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" HorizontalAlignment="Right">

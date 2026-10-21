@@ -11,7 +11,7 @@ if errorlevel 1 (
   pause
   exit /b 1
 )
-dotnet build WeLinkMessageExporter.csproj --configuration Debug --nologo
+dotnet build WeLinkMessageExporter.csproj --configuration Debug --nologo --no-incremental
 if errorlevel 1 (
   echo.
   echo Build failed. See the errors above.

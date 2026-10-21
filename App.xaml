@@ -167,13 +167,14 @@
         <Style TargetType="ScrollBar">
             <Setter Property="Background" Value="#182333"/>
             <Setter Property="Width" Value="12"/>
+            <Setter Property="Focusable" Value="False"/>
             <Style.Triggers>
                 <Trigger Property="Orientation" Value="Vertical">
                     <Setter Property="Template">
                         <Setter.Value>
                             <ControlTemplate TargetType="ScrollBar">
                                 <Border Background="{TemplateBinding Background}" CornerRadius="6" Width="12">
-                                    <Track x:Name="PART_Track" Orientation="Vertical" IsDirectionReversed="True">
+                                    <Track x:Name="PART_Track" Orientation="Vertical" IsDirectionReversed="True" Minimum="{TemplateBinding Minimum}" Maximum="{TemplateBinding Maximum}" Value="{Binding Value, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}" ViewportSize="{TemplateBinding ViewportSize}">
                                         <Track.DecreaseRepeatButton><RepeatButton Command="ScrollBar.PageUpCommand" Style="{StaticResource DarkScrollRepeatButton}"/></Track.DecreaseRepeatButton>
                                         <Track.Thumb><Thumb Style="{StaticResource DarkScrollThumb}" MinHeight="22"/></Track.Thumb>
                                         <Track.IncreaseRepeatButton><RepeatButton Command="ScrollBar.PageDownCommand" Style="{StaticResource DarkScrollRepeatButton}"/></Track.IncreaseRepeatButton>
@@ -190,7 +191,7 @@
                         <Setter.Value>
                             <ControlTemplate TargetType="ScrollBar">
                                 <Border Background="{TemplateBinding Background}" CornerRadius="6" Height="12">
-                                    <Track x:Name="PART_Track" Orientation="Horizontal" IsDirectionReversed="False">
+                                    <Track x:Name="PART_Track" Orientation="Horizontal" IsDirectionReversed="False" Minimum="{TemplateBinding Minimum}" Maximum="{TemplateBinding Maximum}" Value="{Binding Value, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}" ViewportSize="{TemplateBinding ViewportSize}">
                                         <Track.DecreaseRepeatButton><RepeatButton Command="ScrollBar.PageLeftCommand" Style="{StaticResource DarkScrollRepeatButton}"/></Track.DecreaseRepeatButton>
                                         <Track.Thumb><Thumb Style="{StaticResource DarkScrollThumb}" MinWidth="22"/></Track.Thumb>
                                         <Track.IncreaseRepeatButton><RepeatButton Command="ScrollBar.PageRightCommand" Style="{StaticResource DarkScrollRepeatButton}"/></Track.IncreaseRepeatButton>
